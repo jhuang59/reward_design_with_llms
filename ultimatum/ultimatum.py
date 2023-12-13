@@ -25,7 +25,42 @@ class Ultimatum(gym.Env):
 
     def step(self, action):
         done = True
-        reward = int(self.label == action)
+        if self.label == action:
+            reward=1
+        else:
+            reward=0
+        # reward = int(self.label == action)
+        next_obs = np.array([0, 0])
+        info = {}
+        return next_obs, reward, done, info
+    
+    
+    
+class UltimatumScaler(gym.Env):
+    """Environment for Ultimatum Game."""
+
+    def __init__(self, path):
+        super(UltimatumScaler, self).__init__()
+        self.action_space = spaces.Discrete(2)
+        self.observation_space = spaces.Box(low=0.0, high=10.0, shape=(2,))
+        with open(path, "rb") as f:
+            data = pkl.load(f)
+            self.test_set = data["test"]
+
+    def reset(self):
+        # randomly sample from test set
+        idx = np.random.choice(range(len(self.test_set)))
+        self.obs = self.test_set[idx][:-1]
+        self.label = self.test_set[idx][-1]
+        return self.obs
+
+    def step(self, action):
+        done = True
+        if self.label == action:
+            reward=0.7
+        else:
+            reward=0.3
+        # reward = int(self.label == action)
         next_obs = np.array([0, 0])
         info = {}
         return next_obs, reward, done, info
@@ -33,6 +68,20 @@ class Ultimatum(gym.Env):
 
 def train(train_path, seed):
     env = Ultimatum(train_path)
+    model = DQN(
+        "MlpPolicy",
+        env,
+        verbose=1,
+        seed=seed,
+        train_freq=2,
+        learning_starts=20,
+        exploration_fraction=0.5,
+        learning_rate=0.0001,
+    ).learn(10000)
+    return model
+
+def trainScaler(train_path, seed):
+    env = UltimatumScaler(train_path)
     model = DQN(
         "MlpPolicy",
         env,
@@ -65,6 +114,24 @@ def train_RL(train_path, test_path, seed=0):
     # print(f"mean correct: {np.mean(rewards)}, std: {np.around(np.std(rewards),2)}")
     return np.mean(rewards), np.std(rewards)
 
+def train_RLScaler(train_path, test_path, seed=0):
+    model = trainScaler(train_path, seed)
+    test_env = UltimatumScaler(test_path)
+    obs = test_env.reset()
+    model.set_env(test_env)
+    rewards = []
+    for i, datum in enumerate(test_env.test_set):
+        obs = np.array(datum[:-1])
+        test_env.obs = datum[:-1]
+        test_env.label = datum[-1]
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, done, info = test_env.step(action)
+        # print("Step {}".format(i), "Action: ", action, "Obs: ", datum, "reward: ", reward)
+        rewards.append(reward)
+        if reward == 0.3:
+            print(datum, action)
+    # print(f"mean correct: {np.mean(rewards)}, std: {np.around(np.std(rewards),2)}")
+    return np.mean(rewards)/0.7, np.std(rewards)
 
 def evaluate_lm_responses(path):
     with open(f"{path}.pkl", "rb") as f:
@@ -135,7 +202,7 @@ def evaluate_lm_responses_shorter(path):
     )
 
 
-def main(condition, shorter, num_seeds, model, thresholds):
+def main(condition, shorter, num_seeds, model, rewardFormat,thresholds ):
     for threshold in thresholds:
         partial_path = f"{condition}_{threshold}"
         if model == "gpt3":
@@ -153,10 +220,16 @@ def main(condition, shorter, num_seeds, model, thresholds):
         path = f"{partial_path}.pkl"
         means = []
         stds = []
-        for seed in range(num_seeds):
-            mean, std = train_RL(train_path=model_path, test_path=path, seed=seed)
-            means.append(mean)
-            stds.append(std)
+        if rewardFormat=="binary":
+            for seed in range(num_seeds):
+                mean, std = train_RL(train_path=model_path, test_path=path, seed=seed)
+                means.append(mean)
+                stds.append(std)
+        else:
+            for seed in range(num_seeds):
+                mean, std = train_RLScaler(train_path=model_path, test_path=path, seed=seed)
+                means.append(mean)
+                stds.append(std)
         print("mean: ", np.mean(means), "std: ", np.mean(stds))
 
 
@@ -187,6 +260,12 @@ if __name__ == "__main__":
         type=int,
         default=3,
     )
+    parser.add_argument(
+        "--reward",
+        type=str,
+        default="binary",
+        help="[binary, scaler]",
+    )
     args = parser.parse_args()
 
     thresholds_by_condition = {
@@ -199,5 +278,7 @@ if __name__ == "__main__":
         args.shorter,
         args.num_seeds,
         args.model,
+        args.reward,
         thresholds=thresholds_by_condition[args.condition],
+        
     )
